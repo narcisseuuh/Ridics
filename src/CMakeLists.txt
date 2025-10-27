@@ -1,5 +1,5 @@
 add_library(ridics_lib STATIC
-    http/server.cc
+    resp/server.cc
 )
 
 target_link_libraries(ridics_lib

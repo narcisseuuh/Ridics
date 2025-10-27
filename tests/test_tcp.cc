@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "http/server.h"
+#include "resp/server.h"
 #include <fstream>
 #include <filesystem>
 #include <thread>
@@ -23,7 +23,7 @@ std::atomic<int> received_count{0};
 
 void main_loop() {
     TCPServer serv(IP, PORT);
-    while (serv.tcp_accept([] (int fd) {
+    while (serv.tcp_accept([] (int fd, std::string& s) {
         int n;
         while (read(fd, &n, sizeof(int)) > 0) {
             int pos = read_idx.fetch_add(1, std::memory_order_relaxed);
@@ -32,6 +32,7 @@ void main_loop() {
                 received_count.fetch_add(1, std::memory_order_release);
             }
         }
+        return 0;
     }, NUM_CONNECTIONS)) {}
     return;
 }
