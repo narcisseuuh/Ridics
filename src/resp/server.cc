@@ -139,7 +139,23 @@ read_bulk_string(int connfd, char* body, int _k_max_msg, int& i) {
     }
 }
 
-int net::resp::RESPServer::handshake(int connfd) {
+template <typename... Types>
+static inline std::variant<int32_t, std::vector<Types>...>
+read_array(int connfd, char* body, int _k_max_msg, int& i) {
+    int64_t len;
+    auto len_variant = read_int(connfd, body, _k_max_msg, i);
+    if (std::holds_alternative<int32_t>(len_variant)) {
+        return -1;
+    }
+    len = std::get<int64_t>(len_variant);
+
+    // TODO
+    return -1;
+}
+
+template <typename... Types>
+int net::resp::RESPServer<Types...>::handshake(int connfd) {
+    // TOCHANGE : more proper parsing including authentification
     char body[_k_max_msg];
     int32_t rv;
 
@@ -151,14 +167,19 @@ int net::resp::RESPServer::handshake(int connfd) {
     return -1;
 }
 
-int net::resp::RESPServer::one_request(int connfd, worker_t w) {
+template <typename... Types>
+std::variant<int32_t, Types...>
+net::resp::RESPServer<Types...>::one_request(
+    int connfd,
+    int& i
+) {
     /* implementation of the RESP protocol, based on the official documentation.
     * see more at https://redis.io/docs/latest/develop/reference/protocol-spec/
     */
     char body[_k_max_msg];
-    int32_t err = read_stream(connfd, body, 1);
-    if (err) die("read_stream()");
-    switch (body[0]) {
+    int32_t err = read_stream(connfd, body + i, 1);
+    if (err) return -1;
+    switch (body[i]) {
         // simple string
         case '+':
             break;

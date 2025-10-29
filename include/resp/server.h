@@ -3,6 +3,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <functional>
+#include <variant>
 
 namespace net {
 
@@ -12,6 +13,7 @@ static inline int32_t write_stream(int fd, char* buf, size_t n);
 
 namespace tcp {
 
+template<typename Derived, typename... Types>
 class TCPServer {
 public:
     explicit TCPServer(unsigned int s_addr, unsigned short port) {
@@ -25,7 +27,7 @@ public:
         if (rv) die("bind()");
     }
 
-    using worker_t = std::function<int(int, std::string&)>;
+    using worker_t = std::function<int(int, std::variant<Types&...>)>;
     int tcp_accept(worker_t w, int n) {
         int connfd;
         listen(_fd, n);
@@ -37,8 +39,9 @@ public:
                 continue;
             }
             while (true) {
-                int32_t err = one_request(connfd, w);
-                if (err) break;
+                auto res = static_cast<Derived*>(this)->template one_request<int32_t, Types...>(connfd, 0);
+                if (std::holds_alternative<int32_t>(res)) break;
+                w(res);
             }
             close(connfd);
             --n;
@@ -56,17 +59,13 @@ public:
                 continue;
             }
             while (true) {
-                int32_t err = one_request(connfd, w);
-                if (err) break;
+                auto res = static_cast<Derived*>(this)->template one_request<int32_t, Types...>(connfd, 0);
+                if (std::holds_alternative<int32_t>(res)) break;
+                w(res);
             }
             close(connfd);
         }
         return 0;
-    }
-
-    virtual int32_t one_request(int connfd, worker_t w) {
-        std::string body{};
-        return w(connfd, body);
     }
 
     ~TCPServer() {
@@ -81,12 +80,15 @@ private:
 
 namespace resp {
 
-class RESPServer : public net::tcp::TCPServer {
+template <typename... Types>
+class RESPServer : public net::tcp::TCPServer<RESPServer<Types...>, Types...> {
 public:
     explicit RESPServer(unsigned int s_addr, unsigned short port, const int k_max_msg) 
-        : _k_max_msg(k_max_msg), TCPServer(s_addr, port) {}
+        : _k_max_msg(k_max_msg), 
+          net::tcp::TCPServer<RESPServer<Types...>, Types...>(s_addr, port) {}
 
-    int one_request(int connfd, worker_t w) override;
+    using worker_t = std::function<int(int, std::variant<Types&...>)>;
+    std::variant<int32_t, Types...> one_request(int connfd, int& i);
 
     int handshake(int connfd);
 
