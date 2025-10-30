@@ -5,65 +5,46 @@
 #include <optional>
 
 void net::die(const std::string& msg) {
-    std::cerr << "failure : " << msg << '\n';
+    std::cerr << "\033[1;31mfailure : " 
+        << msg << "\033[0m" << '\n';
     exit(1);
 }
 
-static inline int32_t net::read_stream(int fd, char* buf, size_t n) {
-    ssize_t rv;
-    while (n > 0) {
-        rv = read(fd, buf, n);
-        if (rv <= 0) return -1;
-        n -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
-static inline int32_t net::write_stream(int fd, char* buf, size_t n) {
-    ssize_t rv;
-    while (n > 0) {
-        rv = write(fd, buf, n);
-        if (rv <= 0) return -1;
-        n -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
-static inline std::variant<int, std::string>
-read_string(int connfd, char* body, int _k_max_msg, int& i) {
+template <typename... Types>
+std::variant<net::resp::RESPError, std::string>
+net::resp::RESPServer<Types...>::read_string(int connfd, char* body, int& i) {
     // eg.: a simple string corresponding to response code "OK" :
     // +OK\r\n         (for simple string)
     // -ERR blabla\r\n (for simple error)
     ssize_t rv;
     char* str = body + i;
     int i_base = i;
-    while (i < _k_max_msg) {
+    while (i < net::resp::RESPServer<Types...>::k_max_msg()) {
         rv = read(connfd, str, 1);
-        if (rv <= 0) return -1;
+        if (rv <= 0) return {net::resp::ErrKind::END_OF_STREAM};
         // we potentially matched the end of the string \r\n
-        if ((*str == '\r') && (i + 1 < _k_max_msg)) {
+        if ((*str == '\r') && (i + 1 < net::resp::RESPServer<Types...>::k_max_msg())) {
             str += 1;
             ++i;
             rv = read(connfd, str, 1);
-            if (rv <= 0) return -1;
+            if (rv <= 0) return {net::resp::ErrKind::END_OF_STREAM};
             if (*str == '\n') {
                 std::string res(body + i_base, i - i_base + 1 - 2);
                 ++i;
                 return res;
             }
         } else {
-            return -1;
+            return {net::resp::ErrKind::INVALID_CHARACTER};
         }
         ++i;
         str += 1;
     }
-    return -1;
+    return {net::resp::ErrKind::END_OF_STREAM};
 }
 
-static inline std::variant<int, int64_t>
-read_int(int connfd, char* body, int _k_max_msg, int& i) {
+template <typename... Types>
+std::variant<net::resp::RESPError, int64_t>
+net::resp::RESPServer<Types...>::read_int(int connfd, char* body, int& i) {
     // eg.: a request corresponding to number 124
     // :124\r\n
     // :+124\r\n (would also work)
@@ -71,15 +52,15 @@ read_int(int connfd, char* body, int _k_max_msg, int& i) {
     char* str = body + i;
     std::optional<bool> negative{};
     int i_base = i;
-    while (i < _k_max_msg) {
+    while (i < net::resp::RESPServer<Types...>::k_max_msg()) {
         rv = read(connfd, str, 1);
-        if (rv <= 0) return -1;
+        if (rv <= 0) return {net::resp::ErrKind::INVALID_CHARACTER};
         // we potentially matched the end of the string \r\n
-        if ((*str == '\r') && (i + 1 < _k_max_msg)) {
+        if ((*str == '\r') && (i + 1 < net::resp::RESPServer<Types...>::k_max_msg())) {
             str += 1;
             ++i;
             rv = read(connfd, str, 1);
-            if (rv <= 0) return -1;
+            if (rv <= 0) return {net::resp::ErrKind::INVALID_CHARACTER};
             if (*str == '\n' && i > 2) {
                 std::string res(body + i_base, i - i_base + 1 - 2);
                 ++i;
@@ -93,16 +74,17 @@ read_int(int connfd, char* body, int _k_max_msg, int& i) {
             // beginning with +/-
             negative = (*str == '-');
         } else {
-            return -1;
+            return {net::resp::ErrKind::INVALID_CHARACTER};
         }
         ++i;
         str += 1;
     }
-    return -1;
+    return {net::resp::ErrKind::INVALID_CHARACTER};
 }
 
-static inline std::variant<int, std::string>
-read_bulk_string(int connfd, char* body, int _k_max_msg, int& i) {
+template <typename... Types>
+std::variant<net::resp::RESPError, std::string>
+net::resp::RESPServer<Types...>::read_bulk_string(int connfd, char* body, int& i) {
     // eg.: a request corresponding to "test"
     // $4\r\ntest\r\n
     // NOTE: $0\r\n\r\n == ""
@@ -110,123 +92,110 @@ read_bulk_string(int connfd, char* body, int _k_max_msg, int& i) {
     char* str;
     
     // reading string length
-    auto len_variant = read_int(connfd, body, _k_max_msg, i);
+    auto len_variant = read_int(connfd, body, i);
     int64_t len = 0;
-    if (std::holds_alternative<int32_t>(len_variant)) {
-        return -1;
+    if (std::holds_alternative<net::resp::RESPError>(len_variant)) {
+        return std::get<net::resp::RESPError>(len_variant);
     }
     len = std::get<int64_t>(len_variant);
 
     str = body + i;
     int i_base = i;
     rv = read(connfd, str, len);
-    if (rv != len) return -1;
+    if (rv != len) return net::resp::ErrKind::END_OF_STREAM;
     i += len;
-    if (*str == '\r' && i + 1 < _k_max_msg) {
+    if (*str == '\r' && i + 1 < net::resp::RESPServer<Types...>::k_max_msg()) {
         str += 1;
         ++i;
         rv = read(connfd, str, 1);
-        if (rv <= 0) return -1;
+        if (rv <= 0) return net::resp::ErrKind::END_OF_STREAM;
         if (*str == '\n') {
             std::string res(body + i_base, i - i_base + 1 - 2);
             ++i;
             return res;
         } else {
-            return -1;
+            return {net::resp::ErrKind::INVALID_CHARACTER};
         }
     } else {
-        return -1;
+        return {net::resp::ErrKind::INVALID_CHARACTER};
     }
 }
 
 template <typename... Types>
-static inline std::variant<int32_t, std::vector<Types>...>
-read_array(int connfd, char* body, int _k_max_msg, int& i) {
+std::variant<net::resp::RESPError, std::vector<Types>...>
+net::resp::RESPServer<Types...>::read_array(int connfd, char* body, int& i) {
     int64_t len;
-    auto len_variant = read_int(connfd, body, _k_max_msg, i);
-    if (std::holds_alternative<int32_t>(len_variant)) {
-        return -1;
+    auto len_variant = read_int(connfd, body, i);
+    if (std::holds_alternative<net::resp::RESPError>(len_variant)) {
+        return std::get<net::resp::RESPError>(len_variant);
     }
     len = std::get<int64_t>(len_variant);
 
-    // TODO
-    return -1;
+    // we have to take case 0 first to have the type of the vector elements
+    auto first_req = net::resp::RESPServer<Types...>::one_request(connfd, body, i);
+    if (std::holds_alternative<net::resp::RESPError>(first_req)) {
+        return std::get<net::resp::RESPError>(first_req);
+    }
+    // then we can define our vector and iterate on the rest of elements
+    using T = decltype(first_req);
+    std::vector<T> res(len);
+    res[0] = std::get<T>(first_req);
+    for (int k = 1 ; k < len ; ++k) {
+        auto req = one_request(connfd, body, i);
+        if (std::holds_alternative<T>(req)) {
+            res[k] = std::get<T>(req);
+        } else {
+            return std::get<net::resp::RESPError>(req);
+        }
+    }
+    return res;
 }
 
 template <typename... Types>
-int net::resp::RESPServer<Types...>::handshake(int connfd) {
+std::optional<net::resp::RESPError> net::resp::RESPServer<Types...>::handshake(int connfd) {
     // TOCHANGE : more proper parsing including authentification
-    char body[_k_max_msg];
+    char body[net::resp::RESPServer<Types...>::k_max_msg()];
     int32_t rv;
 
     rv = read_stream(connfd, body, 6);
-    if (rv <= 0) return -1;
+    if (rv <= 0) return {net::resp::ErrKind::END_OF_STREAM};
     if (std::string(body, 6) == "HELLO 3") {
-        return 0;
+        return {};
     }
-    return -1;
+    return {net::resp::ErrKind::END_OF_STREAM};
 }
 
 template <typename... Types>
-std::variant<int32_t, Types...>
+std::variant<net::resp::RESPError, Types...>
 net::resp::RESPServer<Types...>::one_request(
     int connfd,
+    char* body,
     int& i
 ) {
     /* implementation of the RESP protocol, based on the official documentation.
     * see more at https://redis.io/docs/latest/develop/reference/protocol-spec/
     */
-    char body[_k_max_msg];
     int32_t err = read_stream(connfd, body + i, 1);
-    if (err) return -1;
+    i += 1;
+    if (err) return {net::resp::ErrKind::END_OF_STREAM};
     switch (body[i]) {
         // simple string
         case '+':
-            break;
+            return net::resp::RESPServer<Types...>::read_string(connfd, body, i);
         // simple error
         case '-':
-            break;
+            return net::resp::RESPServer<Types...>::read_string(connfd, body, i);
         // integer
         case ':':
-            break;
+            return net::resp::RESPServer<Types...>::read_int(connfd, body, i);
         // bulk string
         case '$':
-            break;
+            return net::resp::RESPServer<Types...>::read_bulk_string(connfd, body, i);
         // array
         case '*':
-            break;
-        // null
-        case '_':
-            break;
-        // boolean
-        case '#':
-            break;
-        // double
-        case ',':
-            break;
-        // big number
-        case '(':
-            break;
-        // bulk error
-        case '!':
-            break;
-        // verbatim string
-        case '=':
-            break;
-        // map
-        case '%':
-            break;
-        // attribute
-        case '|':
-            break;
-        // set
-        case '~':
-            break;
-        // push
-        case '>':
-            break;
+            return net::resp::RESPServer<Types...>::read_array(connfd, body, i);
         // unknown
         default:
-            break;
+            return {net::resp::ErrKind::UNHANDLED};
     } 
 }

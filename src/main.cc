@@ -2,18 +2,16 @@
 #include <iostream>
 #include "resp/server.h"
 
-#define PORT ntohs(1337)
+#define PORT      ntohs(1337)
 // 127.0.0.1
-#define IP   ntohl(INADDR_LOOPBACK)
+#define IP        ntohl(INADDR_LOOPBACK)
+#define K_MAX_MSG 4096
 
 int main() {
-    net::tcp::TCPServer serv(IP, PORT);
-    while (serv.tcp_accept([] (int fd, std::string& s) {
-        char nbuf[64] = {};
-        ssize_t n = read(fd, &nbuf, sizeof(nbuf) - 1);
-        if (n < 0) net::die("read()");
-        std::cout << "recieved : " << nbuf << '\n';
-        return 0;
+    net::tcp::TCPServerBasic serv(IP, PORT, K_MAX_MSG);
+    while (serv.tcp_accept([] (int fd, std::variant<net::tcp::TCPError, std::string> res) {
+        std::string s = std::get<std::string>(res);
+        std::cout << "recieved : " << s << '\n';
     }, 10)) {}
     return 0;
 }

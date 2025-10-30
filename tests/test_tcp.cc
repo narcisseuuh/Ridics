@@ -10,9 +10,10 @@
 
 using namespace net::tcp;
 
-#define PORT ntohs(1337)
+#define PORT      ntohs(1337)
 // 127.0.0.1
-#define IP   ntohl(INADDR_LOOPBACK)
+#define IP        ntohl(INADDR_LOOPBACK)
+#define K_MAX_MSG 4096
 
 #define NUM_CONNECTIONS 1
 
@@ -22,9 +23,10 @@ std::atomic<int> read_idx{0};
 std::atomic<int> received_count{0};
 
 void main_loop() {
-    TCPServer serv(IP, PORT);
-    while (serv.tcp_accept([] (int fd, std::string& s) {
+    TCPServerBasic serv(IP, PORT, K_MAX_MSG);
+    while (serv.tcp_accept([] (int fd, std::variant<TCPError, std::string> res) {
         int n;
+        std::string s = std::get<std::string>(res);
         while (read(fd, &n, sizeof(int)) > 0) {
             int pos = read_idx.fetch_add(1, std::memory_order_relaxed);
             if (pos < (int)buf.size()) {
