@@ -4,6 +4,7 @@ if(GTest_FOUND)
     add_executable(test_runner
         test_tcp.cc
         test_main.cc
+        test_resp.cc
     )
     
     target_link_libraries(test_runner

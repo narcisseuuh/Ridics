@@ -1,4 +1,5 @@
 add_library(ridics_lib STATIC
+    datastructures/node.cc
     resp/server.cc
 )
 

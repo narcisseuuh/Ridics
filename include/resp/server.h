@@ -1,10 +1,8 @@
-#include <iostream>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <functional>
 #include <variant>
-#include <optional>
+#include "datastructures/node.h"
 
 namespace net {
 
@@ -49,7 +47,7 @@ public:
         if (rv) die("bind()");
     }
 
-    using worker_t = std::function<void(int, std::variant<Err, Types...>)>;
+    using worker_t = std::function<void(int, std::variant<Err, Types...>&&)>;
 
     int tcp_accept(worker_t w, int n) {
         // accepting n clients
@@ -75,7 +73,7 @@ public:
                     std::get<Err>(res)();
                     break;
                 }
-                w(connfd, res);
+                w(connfd, std::move(res));
             }
             close(connfd);
             --n;
@@ -106,7 +104,7 @@ public:
                     std::get<Err>(res)();
                     break;
                 }
-                w(connfd, res);
+                w(connfd, std::move(res));
             }
             close(connfd);
         }
@@ -155,10 +153,23 @@ public:
         : net::tcp::TCPServer<TCPServerBasic, TCPError, std::string>(s_addr, port, k_max_msg) {}
 
     std::variant<TCPError, std::string> one_request(int connfd, char* body, int& i) {
-        // base implementation simply transmits the raw bytes read.
-        ssize_t n = read(connfd, body, k_max_msg());
-        if (n < 0) return {READ_FAILURE};
-        return {std::string(body)};
+        // Read up to k_max_msg() bytes, looking for newline as message delimiter
+        ssize_t n = 0;
+        const int max_size = this->k_max_msg();
+        
+        while (n < max_size) {
+            char byte;
+            int rv = read_stream(connfd, &byte, 1);
+            if (rv < 0) {
+                return {net::tcp::ErrKind::READ_FAILURE};
+            }
+            body[n] = byte;
+            ++n;
+            if (byte == '\n') {
+                break;
+            }
+        }
+        return {std::string(body, n > 0 && body[n-1] == '\n' ? n - 1 : n)};
     }
 
     std::optional<TCPError> handshake(int connfd) {
@@ -205,19 +216,17 @@ struct RESPError {
     }
 };
 
-template <typename... Types>
-class RESPServer : public net::tcp::TCPServer<RESPServer<Types...>, RESPError, Types...> {
+class RESPServer : public net::tcp::TCPServer<RESPServer, RESPError, std::unique_ptr<data::Node>> {
 public:
     explicit RESPServer(unsigned int s_addr, unsigned short port, const int k_max_msg) 
-        : net::tcp::TCPServer<RESPServer<Types...>, RESPError, Types...>(s_addr, port, k_max_msg) {}
+        : net::tcp::TCPServer<RESPServer, RESPError, std::unique_ptr<data::Node>>(s_addr, port, k_max_msg) {}
 
-    std::variant<RESPError, std::vector<Types>...> read_array(int connfd, char* body, int& i);
-    std::variant<RESPError, std::string> read_bulk_string(int connfd, char* body, int& i);
-    std::variant<RESPError, int64_t> read_int(int connfd, char* body, int& i);
-    std::variant<RESPError, std::string> read_string(int connfd, char* body, int& i);
+    std::variant<RESPError, std::unique_ptr<data::Node>> read_array(int connfd, char* body, int& i);
+    std::variant<RESPError, std::unique_ptr<data::Node>> read_bulk_string(int connfd, char* body, int& i);
+    std::variant<RESPError, std::unique_ptr<data::Node>> read_int(int connfd, char* body, int& i);
+    std::variant<RESPError, std::unique_ptr<data::Node>> read_string(int connfd, char* body, int& i);
 
-    using worker_t = std::function<void(int, std::variant<RESPError, Types...>)>;
-    std::variant<RESPError, Types...> one_request(int connfd, char*body, int& i);
+    std::variant<RESPError, std::unique_ptr<data::Node>> one_request(int connfd, char*body, int& i);
 
     std::optional<net::resp::RESPError> handshake(int connfd);
 };
