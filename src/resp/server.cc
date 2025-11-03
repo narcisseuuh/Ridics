@@ -166,9 +166,9 @@ net::resp::RESPServer::handshake(int connfd) {
     std::vector<char> body(k_max_msg());
     int32_t rv;
 
-    rv = read_stream(connfd, body.data(), 6);
+    rv = read_stream(connfd, body.data(), 9);
     if (rv <= 0) return {net::resp::ErrKind::END_OF_STREAM};
-    if (std::string(body.data(), 6) == "HELLO 3") {
+    if (std::string(body.data(), 9) == "HELLO 3\r\n") {
         return {};
     }
     return {net::resp::ErrKind::END_OF_STREAM};

@@ -18,7 +18,7 @@ static inline int32_t read_stream(int fd, char* buf, size_t n) {
     return 0;
 }
 
-static inline int32_t write_stream(int fd, char* buf, size_t n) {
+static inline int32_t write_stream(int fd, const char* buf, size_t n) {
     ssize_t rv;
     while (n > 0) {
         rv = write(fd, buf, n);
@@ -69,10 +69,6 @@ public:
                 char body[_k_max_msg];
                 int i = 0;
                 auto res = static_cast<Derived*>(this)->template one_request(connfd, body, i);
-                if (std::holds_alternative<Err>(res)) {
-                    std::get<Err>(res)();
-                    break;
-                }
                 w(connfd, std::move(res));
             }
             close(connfd);
@@ -100,10 +96,6 @@ public:
                 char body[_k_max_msg];
                 int i = 0;
                 auto res = static_cast<Derived*>(this)->template one_request(connfd, body, i);
-                if (std::holds_alternative<Err>(res)) {
-                    std::get<Err>(res)();
-                    break;
-                }
                 w(connfd, std::move(res));
             }
             close(connfd);
@@ -195,6 +187,13 @@ struct RESPError {
     RESPError(ErrKind err) : _err(err) {}
 
     void operator()() const {
+        std::string err_msg = to_string();
+        std::cerr << "\033[1;31m"
+            << "Failed to parse request : "
+            << err_msg << "\033[0m" << '\n';
+    }
+
+    std::string to_string() const {
         std::string err_msg;
         switch (_err) {
             case INVALID_CHARACTER:
@@ -210,9 +209,7 @@ struct RESPError {
                 err_msg = "currently unhandled";
                 break;
         }
-        std::cerr << "\033[1;31m"
-            << "Failed to parse request : "
-            << err_msg << "\033[0m" << '\n';
+        return err_msg;
     }
 };
 

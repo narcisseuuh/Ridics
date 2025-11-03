@@ -12,6 +12,7 @@ class Node {
 public:
     virtual ~Node() = default;
     virtual std::string to_string() const = 0;
+    virtual std::string to_resp() const = 0;
 };
 
 std::ostream& operator<<(std::ostream& out, const Node& n);
@@ -34,6 +35,17 @@ public:
         return _s;
     }
 
+    std::string to_resp() const override {
+        if (_s.has_value()) {
+            auto& s = _s.value();
+            size_t n = s.size();
+            return "$" + std::to_string(n) + "\r\n" + s + "\r\n";
+        } else {
+            return "$-1\r\n";
+        }
+    }
+
+
     ~BulkString() {}
 private:
     std::optional<std::string> _s;
@@ -51,6 +63,10 @@ public:
         return _s;
     }
 
+    std::string to_resp() const override {
+        return "+" + _s + "\r\n";
+    }
+
     ~String() {}
 private:
     std::string _s;
@@ -66,6 +82,10 @@ public:
 
     const int64_t& get() const {
         return _i;
+    }
+
+    std::string to_resp() const override {
+        return ":" + std::to_string(_i) + "\r\n";
     }
 
 private:
@@ -98,6 +118,15 @@ public:
 
     void push_back(std::unique_ptr<Node> n) {
         _a.push_back(std::move(n));
+    }
+
+    std::string to_resp() const override {
+        int n = _a.size();
+        std::string s = "*" + std::to_string(n) + "\r\n";
+        for (auto&& rv : _a) {
+            s += rv->to_resp();
+        }
+        return s;
     }
     
     ~Array() {}
