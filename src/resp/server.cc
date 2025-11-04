@@ -26,6 +26,7 @@ net::resp::RESPServer::read_string(int connfd, char* body, int& i) {
             if (*str == '\n') {
                 std::string s(body + i_base, i - i_base + 1 - 2);
                 ++i;
+                std::clog << "Parsed string : " << s << '\n';
                 return {std::make_unique<data::String>(s)};
             }
         } else {
@@ -59,6 +60,7 @@ net::resp::RESPServer::read_int(int connfd, char* body, int& i) {
                 std::string s(body + i_base, i - i_base + 1 - 2);
                 ++i;
                 if (negative.has_value() && negative.emplace()) {
+                    std::clog << "Parsed int : " << s << '\n';
                     return {std::unique_ptr<data::Node>(
                         dynamic_cast<data::Node*>(new data::Integer(-static_cast<int64_t>(stoi(s))))
                     )};
@@ -163,15 +165,22 @@ net::resp::RESPServer::read_array(int connfd, char* body, int& i) {
 std::optional<net::resp::RESPError> 
 net::resp::RESPServer::handshake(int connfd) {
     // TOCHANGE : more proper parsing including authentification
-    std::vector<char> body(k_max_msg());
+    char body[k_max_msg()];
+    const char* expected = "HELLO 3\r\n";
     int32_t rv;
 
-    rv = read_stream(connfd, body.data(), 9);
-    if (rv <= 0) return {net::resp::ErrKind::END_OF_STREAM};
-    if (std::string(body.data(), 9) == "HELLO 3\r\n") {
-        return {};
+    int i = 0;
+    while (i < 9) {
+        int rv = read_stream(connfd, body + i, 1);
+        if (rv < 0) {
+            return {net::resp::ErrKind::END_OF_STREAM};
+        }
+        if (expected[i] != body[i]) {
+            return {net::resp::ErrKind::INVALID_CHARACTER};
+        }
+        ++i;
     }
-    return {net::resp::ErrKind::END_OF_STREAM};
+    return {};
 }
 
 std::variant<net::resp::RESPError, std::unique_ptr<data::Node>>

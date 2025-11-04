@@ -8,6 +8,10 @@
 #include <list>
 #include <cstdlib>
 #include <chrono>
+#include <vector>
+#include <memory>
+#include <string>
+#include <cstring>
 
 using namespace net::resp;
 
@@ -21,24 +25,32 @@ inline void write_view(int fd, std::string_view sv, int n) {
     net::write_stream(fd, std::string(sv).c_str(), n);
 }
 
-std::vector<data::Node*> buf_resp(1000);
+std::vector<std::unique_ptr<data::Node>> buf_resp(1000);
 
 std::atomic<int> read_idx_resp{0};
 std::atomic<int> received_count_resp{0};
 
 void main_loop_resp() {
     RESPServer serv(IP, PORT, K_MAX_MSG);
-    
+
     while (serv.tcp_accept([] (int fd, std::variant<RESPError, std::unique_ptr<data::Node>>&& res) {
         if (std::holds_alternative<std::unique_ptr<data::Node>>(res)) {
-                auto node = std::move(std::get<std::unique_ptr<data::Node>>(res));
-                std::string ok_msg = net::resp::ok();
-                write_view(fd, ok_msg, ok_msg.size());
-            } else {
-                auto err = std::get<RESPError>(res);
-                std::string err_msg = err.to_string();
-                write_view(fd, net::resp::err(err_msg), net::resp::err(err_msg).size());
+            auto node = std::move(std::get<std::unique_ptr<data::Node>>(res));
+            int pos = read_idx_resp.fetch_add(1, std::memory_order_relaxed);
+            if (pos < (int)buf_resp.size()) {
+                buf_resp[pos] = std::move(node);
             }
+            received_count_resp.fetch_add(1, std::memory_order_release);
+            std::string ok_msg = net::resp::ok();
+            net::write_stream(fd, ok_msg.c_str(), ok_msg.size());
+        } else {
+            auto err = std::get<RESPError>(res);
+            std::string err_msg = err.to_string();
+            std::cerr << "Server parse error: " << err_msg << '\n';
+            std::string em = net::resp::err(err_msg);
+            net::write_stream(fd, em.c_str(), em.size());
+        }
+        return 0;
     }, NUM_CONNECTIONS)) {}
     return;
 }
@@ -46,9 +58,11 @@ void main_loop_resp() {
 class RESPTest : public testing::Test {
 protected:
     void SetUp() override {
-        read_idx_resp.store(0);
-        received_count_resp.store(0);
+        read_idx_resp.store(0, std::memory_order_relaxed);
+        received_count_resp.store(0, std::memory_order_relaxed);
+        for (auto &p : buf_resp) p.reset();
         _t = std::thread(main_loop_resp);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     void TearDown() override {
@@ -60,6 +74,18 @@ private:
     std::thread _t;
 };
 
+static std::string read_n(int fd, size_t n, std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) {
+    std::vector<char> buf(n);
+    auto start = std::chrono::steady_clock::now();
+    while (true) {
+        int32_t rv = net::read_stream(fd, buf.data(), n);
+        if (std::chrono::steady_clock::now() - start > timeout) break;
+        if (rv <= 0) continue;
+        return std::string(buf.data(), n);
+    }
+    return std::string();
+}
+
 TEST_F(RESPTest, ParseInt) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     ASSERT_GE(fd, 0) << "socket() failed";
@@ -68,17 +94,33 @@ TEST_F(RESPTest, ParseInt) {
     addr.sin_family = AF_INET;
     addr.sin_port = PORT;
     addr.sin_addr.s_addr = IP;
-    
+
     int rv = connect(fd, (const struct sockaddr*)&addr, sizeof(addr));
     ASSERT_EQ(rv, 0) << "connect() failed";
 
     // handshake
-    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n"));
+    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n") - 1);
+    std::string hresp = read_n(fd, 5);
+    ASSERT_EQ(hresp, "+OK\r\n") << "Handshake failed: " << hresp;
 
-    write_view(fd, ":123\r\n", sizeof(":123\r\n"));
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
+    const std::string sent = ":123\r\n";
+    write_view(fd, sent, sent.size());
+
+    std::string ack = read_n(fd, 5);
+    ASSERT_EQ(ack, "+OK\r\n") << "Server did not ack integer: " << ack;
+
+    const auto start = std::chrono::steady_clock::now();
+    while (received_count_resp.load(std::memory_order_acquire) < 1) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    ASSERT_GE(received_count_resp.load(), 1) << "Server did not receive integer";
+
+    auto &node = buf_resp[0];
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->to_resp(), sent);
+
     close(fd);
 }
 
@@ -90,17 +132,32 @@ TEST_F(RESPTest, ParseString) {
     addr.sin_family = AF_INET;
     addr.sin_port = PORT;
     addr.sin_addr.s_addr = IP;
-    
+
     int rv = connect(fd, (const struct sockaddr*)&addr, sizeof(addr));
     ASSERT_EQ(rv, 0) << "connect() failed";
 
     // handshake
-    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n"));
+    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n") - 1);
+    std::string hresp = read_n(fd, 5);
+    ASSERT_EQ(hresp, "+OK\r\n") << "Handshake failed: " << hresp;
 
-    write_view(fd, "+OK\r\n", sizeof("+OK\r\n"));
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
+    const std::string sent = "+OK\r\n";
+    write_view(fd, sent, sent.size());
+
+    std::string ack = read_n(fd, 5);
+    ASSERT_EQ(ack, "+OK\r\n") << "Server did not ack simple string: " << ack;
+
+    const auto start = std::chrono::steady_clock::now();
+    while (received_count_resp.load(std::memory_order_acquire) < 1) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    ASSERT_GE(received_count_resp.load(), 1) << "Server did not receive simple string";
+    auto &node = buf_resp[0];
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->to_resp(), sent);
+
     close(fd);
 }
 
@@ -112,17 +169,32 @@ TEST_F(RESPTest, ParseBulkString) {
     addr.sin_family = AF_INET;
     addr.sin_port = PORT;
     addr.sin_addr.s_addr = IP;
-    
+
     int rv = connect(fd, (const struct sockaddr*)&addr, sizeof(addr));
     ASSERT_EQ(rv, 0) << "connect() failed";
 
     // handshake
-    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n"));
+    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n") - 1);
+    std::string hresp = read_n(fd, 5);
+    ASSERT_EQ(hresp, "+OK\r\n") << "Handshake failed: " << hresp;
 
-    write_view(fd, "$4\r\ntest\r\n", sizeof("$4\r\ntest\r\n"));
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
+    const std::string sent = "$4\r\ntest\r\n";
+    write_view(fd, sent, sent.size());
+
+    std::string ack = read_n(fd, 5);
+    ASSERT_EQ(ack, "+OK\r\n") << "Server did not ack bulk string: " << ack;
+
+    const auto start = std::chrono::steady_clock::now();
+    while (received_count_resp.load(std::memory_order_acquire) < 1) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    ASSERT_GE(received_count_resp.load(), 1) << "Server did not receive bulk string";
+    auto &node = buf_resp[0];
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->to_resp(), sent);
+
     close(fd);
 }
 
@@ -134,16 +206,31 @@ TEST_F(RESPTest, ParseArray) {
     addr.sin_family = AF_INET;
     addr.sin_port = PORT;
     addr.sin_addr.s_addr = IP;
-    
+
     int rv = connect(fd, (const struct sockaddr*)&addr, sizeof(addr));
     ASSERT_EQ(rv, 0) << "connect() failed";
 
     // handshake
-    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n"));
+    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n") - 1);
+    std::string hresp = read_n(fd, 5);
+    ASSERT_EQ(hresp, "+OK\r\n") << "Handshake failed: " << hresp;
 
-    write_view(fd, "*2\r\n:123\r\n+OK\r\n", sizeof("*2\r\n:123\r\n+OK\r\n"));
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
+    const std::string sent = "*2\r\n:123\r\n+OK\r\n";
+    write_view(fd, sent, sent.size());
+
+    std::string ack = read_n(fd, 5);
+    ASSERT_EQ(ack, "+OK\r\n") << "Server did not ack array: " << ack;
+
+    const auto start = std::chrono::steady_clock::now();
+    while (received_count_resp.load(std::memory_order_acquire) < 1) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    ASSERT_GE(received_count_resp.load(), 1) << "Server did not receive array";
+    auto &node = buf_resp[0];
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->to_resp(), sent);
+
     close(fd);
 }

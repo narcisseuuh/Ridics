@@ -1,60 +1,61 @@
 #include "resp/server.h"
 #include <list>
 
+#include <functional>
+#include <utility>
+
 struct ChainOfResponsibility {
     template<typename... Args>
     struct Chain {
-        template<typename Callee, typename Next>
-        Chain(const Callee c, const Next& n) {
-            m_impl = c;
-            m_next = n;
+        using NextFn = std::function<void(Args...)>;
+        using HandlerFn = std::function<void(Args..., NextFn)>;
+
+        Chain(HandlerFn h, NextFn n) : handler(std::move(h)), next(std::move(n)) {}
+
+        explicit Chain(NextFn n) : handler(nullptr), next(std::move(n)) {}
+
+        template<typename Callee>
+        static HandlerFn wrap_callee(Callee c) {
+            return [c = std::move(c)](Args... args, NextFn next) {
+                Chain proxy(next);
+                c(std::forward<Args>(args)..., proxy);
+            };
         }
 
         template<typename Callee>
-        decltype(auto) attach(Callee c) {
-            return Chain(c, *this);
+        Chain attach(Callee c) const {
+            return Chain(wrap_callee(std::move(c)), next);
         }
 
-        void operator()(Args... e) {
-            m_impl(e..., m_next);
+        void operator()(Args... args) const {
+            if (handler) {
+                handler(std::forward<Args>(args)..., next);
+            } else if (next) {
+                next(std::forward<Args>(args)...);
+            }
         }
 
-        std::function<void(Args..., std::function<void(Args...)>)> m_impl;
-        std::function<void(Args...)> m_next;
+        HandlerFn handler;
+        NextFn next;
     };
- 
+
     template<typename... Args>
-    struct ChainTail
-    {
+    struct ChainTail {
+        using NextFn = std::function<void(Args...)>;
+
+        explicit ChainTail(NextFn n) : next(std::move(n)) {}
+
         template<typename Callee>
-        ChainTail(Callee c) {
-            m_impl = c;
-        }
-        
-        template<typename Callee>
-        decltype(auto) attach(Callee c) {
-            return Chain<Args...>(c, m_impl);
+        auto attach(Callee c) const {
+            return Chain<Args...>(Chain<Args...>::wrap_callee(std::move(c)), next);
         }
 
-        void operator()(Args... e) {
-            m_impl(e...);
+        void operator()(Args... args) const {
+            if (next) next(std::forward<Args>(args)...);
         }
 
-        std::function<void(Args... e)> m_impl;
+        NextFn next;
     };
-
-    template<typename>
-    struct StartChain;  
-    
-    template<typename C, typename... Args>
-    struct StartChain<void (C::*)(Args...) const> {
-        using Type = ChainTail<Args...>;
-    };
-
-    template<typename Callee>
-    static decltype(auto) start_new(Callee c) {
-        return StartChain<decltype(&Callee::operator())>::Type(c);
-    }
 };
 
 namespace net {
@@ -67,7 +68,7 @@ public:
 
     Redis(unsigned int s_addr, unsigned short port, const int k_max_msg)
         : _s(s_addr, port, k_max_msg),
-          _chain(std::make_unique<ChainOfResponsibility::ChainTail<int, T&&>>(
+          _chain(std::make_unique<ChainOfResponsibility::Chain<int, T&&>>(
               [](int connfd, T&& n) {
                   std::string err_msg = "-ERR " +
                       std::get<net::resp::RESPError>(n).to_string() + "\r\n";
@@ -97,7 +98,7 @@ public:
 
 private:
     net::resp::RESPServer _s;
-    std::unique_ptr<ChainOfResponsibility::ChainTail<int, T&&>> _chain;
+    std::unique_ptr<ChainOfResponsibility::Chain<int, T&&>> _chain;
 };
 
 }

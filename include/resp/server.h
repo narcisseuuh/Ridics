@@ -21,7 +21,7 @@ static inline int32_t read_stream(int fd, char* buf, size_t n) {
 static inline int32_t write_stream(int fd, const char* buf, size_t n) {
     ssize_t rv;
     while (n > 0) {
-        rv = write(fd, buf, n);
+        rv = send(fd, buf, n, MSG_NOSIGNAL);
         if (rv <= 0) return -1;
         n -= (size_t)rv;
         buf += rv;
@@ -63,7 +63,7 @@ public:
             auto handshake = static_cast<Derived*>(this)->handshake(connfd);
             if (handshake.has_value()) {
                 handshake.value()();
-                break;
+                continue;
             }
             while (true) {
                 char body[_k_max_msg];
@@ -90,7 +90,7 @@ public:
             auto handshake = static_cast<Derived*>(this)->handshake(connfd);
             if (handshake.has_value()) {
                 handshake.value()();
-                break;
+                continue;
             }
             while (true) {
                 char body[_k_max_msg];
