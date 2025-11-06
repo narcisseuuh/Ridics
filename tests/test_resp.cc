@@ -86,6 +86,39 @@ static std::string read_n(int fd, size_t n, std::chrono::milliseconds timeout = 
     return std::string();
 }
 
+static inline std::string generate_random(size_t max_sz) {
+    // generation of a random buffer
+    size_t sz = rand() % max_sz;
+    std::string res = std::format("*{}\r\n", sz);
+    std::string bs;
+    uint16_t bs_len;
+    int16_t k;
+    for (int i = 0 ; i < sz ; ++i) {
+        int choice = rand() % 3;
+        switch (choice) {
+            case 0:
+                // integer
+                k = rand();
+                res += std::format(":{}\r\n", k);
+                break;
+            case 1:
+                // bulk string
+                bs_len = rand();
+                for (int j = 0 ; j < bs_len ; ++j) {
+                    bs += std::to_string(rand());
+                }
+                res += bs;
+                break;
+            case 2:
+                // array
+                res += generate_random(max_sz / 2);
+                break;
+        }
+    }
+    if (res.size() < K_MAX_MSG) return res;
+    else return generate_random(max_sz / 2);
+}
+
 TEST_F(RESPTest, ParseInt) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     ASSERT_GE(fd, 0) << "socket() failed";
@@ -231,6 +264,85 @@ TEST_F(RESPTest, ParseArray) {
     auto &node = buf_resp[0];
     ASSERT_NE(node, nullptr);
     EXPECT_EQ(node->to_resp(), sent);
+
+    close(fd);
+}
+
+TEST_F(RESPTest, ParseNullArray) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(fd, 0) << "socket() failed";
+
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = PORT;
+    addr.sin_addr.s_addr = IP;
+
+    int rv = connect(fd, (const struct sockaddr*)&addr, sizeof(addr));
+    ASSERT_EQ(rv, 0) << "connect() failed";
+
+    // handshake
+    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n") - 1);
+    std::string hresp = read_n(fd, 5);
+    ASSERT_EQ(hresp, "+OK\r\n") << "Handshake failed: " << hresp;
+
+    const std::string sent = "*-1\r\n";
+    write_view(fd, sent, sent.size());
+
+    std::string ack = read_n(fd, 5);
+    ASSERT_EQ(ack, "+OK\r\n") << "Server did not ack array: " << ack;
+
+    const auto start = std::chrono::steady_clock::now();
+    while (received_count_resp.load(std::memory_order_acquire) < 1) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    ASSERT_GE(received_count_resp.load(), 1) << "Server did not receive array";
+    auto &node = buf_resp[0];
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->to_resp(), sent);
+
+    close(fd);
+}
+
+TEST_F(RESPTest, StressRESP) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(fd, 0) << "socket() failed";
+
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = PORT;
+    addr.sin_addr.s_addr = IP;
+
+    int rv = connect(fd, (const struct sockaddr*)&addr, sizeof(addr));
+    ASSERT_EQ(rv, 0) << "connect() failed";
+
+    // handshake
+    write_view(fd, "HELLO 3\r\n", sizeof("HELLO 3\r\n") - 1);
+    std::string hresp = read_n(fd, 5);
+    ASSERT_EQ(hresp, "+OK\r\n") << "Handshake failed: " << hresp;
+
+    std::string sent[500];
+    srand(time(NULL));
+    for (int i = 0 ; i < 500 ; ++i) {
+        sent[i] = generate_random(8);
+        write_view(fd, sent[i], sent[i].size());
+        std::string ack = read_n(fd, 5);
+        ASSERT_EQ(ack, "+OK\r\n") << "Server did not ack array: " << ack;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    while (received_count_resp.load(std::memory_order_acquire) < 1) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    ASSERT_GE(received_count_resp.load(), 1) << "Server did not receive array";
+    for (int i = 0 ; i < 500 ; ++i) {
+        auto &node = buf_resp[i];
+        ASSERT_NE(node, nullptr);
+        EXPECT_EQ(node->to_resp(), sent[i]);
+    }
 
     close(fd);
 }

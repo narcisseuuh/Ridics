@@ -70,7 +70,7 @@ net::resp::RESPServer::read_int(int connfd, char* body, int& i) {
                     )};
                 }
             }
-        } else if ((*str == '-' || *str == '+') && (i == 1)) {
+        } else if ((*str == '-' || *str == '+') && (i == i_base)) {
             // beginning with +/-
             negative = (*str == '-');
         } else if ((*str < '0') || (*str > '9')) {

@@ -3,6 +3,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <vector>
 #include <optional>
 #include <utility>
 
@@ -94,15 +95,22 @@ private:
 
 class Array : public Node {
 public:
-    explicit Array(size_t len) {
-        _a.reserve(len);
+    explicit Array(int len) {
+        if (len >= 0) {
+            _a.emplace();
+            _a->reserve(static_cast<size_t>(len));
+        }
     }
 
     std::string to_string() const override {
-        int n = _a.size();
+        if (!_a.has_value()) {
+            return "\033[31;mnull\033[0m";
+        }
+        auto& a = _a.value();
+        int n = a.size();
         std::string s = "[";
         for (int i = 0 ; i < n ; ++i) {
-            s += _a[i]->to_string();
+            s += a[i]->to_string();
             if (i == n - 1) {
                 break;
             }
@@ -112,18 +120,21 @@ public:
         return s;
     }
 
-    const std::vector<std::unique_ptr<Node>>& get() const {
+    const std::optional<std::vector<std::unique_ptr<Node>>>& get() const {
         return _a;
     }
 
     void push_back(std::unique_ptr<Node> n) {
-        _a.push_back(std::move(n));
+        if (!_a.has_value()) return;
+        _a.value().push_back(std::move(n));
     }
 
     std::string to_resp() const override {
-        int n = _a.size();
+        if (!_a.has_value()) return "*-1\r\n";
+        auto& a = _a.value();
+        int n = a.size();
         std::string s = "*" + std::to_string(n) + "\r\n";
-        for (auto&& rv : _a) {
+        for (auto&& rv : a) {
             s += rv->to_resp();
         }
         return s;
@@ -132,7 +143,7 @@ public:
     ~Array() {}
 
 private:
-    std::vector<std::unique_ptr<Node>> _a;
+    std::optional<std::vector<std::unique_ptr<Node>>> _a;
 };
 
 } // namespace data
