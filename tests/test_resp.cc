@@ -80,7 +80,7 @@ static std::string read_n(int fd, size_t n, std::chrono::milliseconds timeout = 
     while (true) {
         int32_t rv = net::read_stream(fd, buf.data(), n);
         if (std::chrono::steady_clock::now() - start > timeout) break;
-        if (rv <= 0) continue;
+        if (rv < 0) continue;
         return std::string(buf.data(), n);
     }
     return std::string();

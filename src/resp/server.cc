@@ -28,9 +28,9 @@ net::resp::RESPServer::read_string(int connfd, char* body, int& i) {
                 ++i;
                 std::clog << "Parsed string : " << s << '\n';
                 return {std::make_unique<data::String>(s)};
+            } else {
+                return {net::resp::ErrKind::INVALID_CHARACTER};
             }
-        } else {
-            return {net::resp::ErrKind::INVALID_CHARACTER};
         }
         ++i;
         str += 1;
@@ -49,13 +49,13 @@ net::resp::RESPServer::read_int(int connfd, char* body, int& i) {
     int i_base = i;
     while (i < net::resp::RESPServer::k_max_msg()) {
         rv = read(connfd, str, 1);
-        if (rv <= 0) return {net::resp::ErrKind::INVALID_CHARACTER};
+        if (rv <= 0) return {net::resp::ErrKind::END_OF_STREAM};
         // we potentially matched the end of the string \r\n
         if ((*str == '\r') && (i + 1 < net::resp::RESPServer::k_max_msg())) {
             str += 1;
             ++i;
             rv = read(connfd, str, 1);
-            if (rv <= 0) return {net::resp::ErrKind::INVALID_CHARACTER};
+            if (rv <= 0) return {net::resp::ErrKind::END_OF_STREAM};
             if (*str == '\n' && i > 2) {
                 std::string s(body + i_base, i - i_base + 1 - 2);
                 ++i;
@@ -73,13 +73,13 @@ net::resp::RESPServer::read_int(int connfd, char* body, int& i) {
         } else if ((*str == '-' || *str == '+') && (i == 1)) {
             // beginning with +/-
             negative = (*str == '-');
-        } else {
+        } else if ((*str < '0') || (*str > '9')) {
             return {net::resp::ErrKind::INVALID_CHARACTER};
         }
         ++i;
         str += 1;
     }
-    return {net::resp::ErrKind::INVALID_CHARACTER};
+    return {net::resp::ErrKind::END_OF_STREAM};
 }
 
 std::variant<net::resp::RESPError, std::unique_ptr<data::Node>>
@@ -111,6 +111,9 @@ net::resp::RESPServer::read_bulk_string(int connfd, char* body, int& i) {
     rv = read(connfd, str, len);
     if (rv != len) return net::resp::ErrKind::END_OF_STREAM;
     i += len;
+    str += len;
+    rv = read(connfd, str, 1);
+    if (rv <= 0) return net::resp::ErrKind::END_OF_STREAM;
     if (*str == '\r' && i + 1 < net::resp::RESPServer::k_max_msg()) {
         str += 1;
         ++i;
@@ -123,9 +126,11 @@ net::resp::RESPServer::read_bulk_string(int connfd, char* body, int& i) {
                 dynamic_cast<data::Node*>(new data::BulkString(s))
             )};
         } else {
+            std::cout << "invalid character : " << (int)*str << '\n';
             return {net::resp::ErrKind::INVALID_CHARACTER};
         }
     } else {
+        std::cout << "invalid character : " << (int)*str << '\n';
         return {net::resp::ErrKind::INVALID_CHARACTER};
     }
 }
@@ -180,6 +185,9 @@ net::resp::RESPServer::handshake(int connfd) {
         }
         ++i;
     }
+    if (write_stream(connfd, "+OK\r\n", sizeof("+OK\r\n") - 1) < 0) {
+        return {net::resp::ErrKind::SEND_FAILURE};
+    }
     return {};
 }
 
@@ -195,7 +203,7 @@ net::resp::RESPServer::one_request(
     int32_t err = read_stream(connfd, body + i, 1);
     i += 1;
     if (err) return {net::resp::ErrKind::END_OF_STREAM};
-    switch (body[i]) {
+    switch (body[i - 1]) {
         // simple string
         case '+':
             return net::resp::RESPServer::read_string(connfd, body, i);

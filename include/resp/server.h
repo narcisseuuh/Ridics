@@ -21,7 +21,7 @@ static inline int32_t read_stream(int fd, char* buf, size_t n) {
 static inline int32_t write_stream(int fd, const char* buf, size_t n) {
     ssize_t rv;
     while (n > 0) {
-        rv = send(fd, buf, n, MSG_NOSIGNAL);
+        rv = write(fd, buf, n);
         if (rv <= 0) return -1;
         n -= (size_t)rv;
         buf += rv;
@@ -178,7 +178,8 @@ enum ErrKind {
     INVALID_CHARACTER,
     END_OF_STREAM,
     INVALID_TYPE,
-    UNHANDLED
+    UNHANDLED,
+    SEND_FAILURE
 };
 
 struct RESPError {
@@ -207,6 +208,9 @@ struct RESPError {
                 break;
             case UNHANDLED:
                 err_msg = "currently unhandled";
+                break;
+            case SEND_FAILURE:
+                err_msg = "failed to send response";
                 break;
         }
         return err_msg;
